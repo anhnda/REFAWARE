@@ -208,7 +208,21 @@ class RefLIME:
             p = F.softmax(logits, dim=1)[:, target]
             out[s:s + zb.shape[0]] = p.detach().cpu().numpy()
         return out
-
+    @torch.no_grad()
+    def _query_logit(self, x, rho, Z, target):
+        """Same as _query but returns target-class LOGIT (pre-softmax).
+        Used only for the saturation diagnostic; the floor still uses
+        probability-space sigma_obs to match the §3.1 observation model."""
+        lib = self._lib
+        out = np.zeros(Z.shape[0], dtype=np.float64)
+        for s in range(0, Z.shape[0], self.batch_size):
+            zb = Z[s:s + self.batch_size]
+            keep = lib.to_pixel_keep(zb)
+            comp = rho(x, keep)
+            logits = self.model(comp.to(self.device))
+            lg = logits[:, target]
+            out[s:s + zb.shape[0]] = lg.detach().cpu().numpy()
+        return out
     # ---- estimate sigma_obs for a stochastic reference ----------------------
     @torch.no_grad()
     def _estimate_sigma_obs(self, x, rho, target) -> float:
@@ -217,18 +231,26 @@ class RefLIME:
         lib = self._lib
         Zr = lib.sample(min(64, self.n_samples))        # a few fixed masks
         per_mask_std = []
+        per_mask_std_logit = []
         for i in range(Zr.shape[0]):
             zi = Zr[i:i + 1].repeat(self.sigma_repeat, 1)
             vals = self._query(x, rho, zi, target)
+            vals_lg = self._query_logit(x, rho, zi, target)
             per_mask_std.append(vals.std())
-        # --- TEMP DIAGNOSTIC ---
-        print(f"[sigma dbg] is_stochastic={getattr(rho,'is_stochastic',False)} "
-              f"n_masks={Zr.shape[0]} repeat={self.sigma_repeat} "
-              f"per_mask_std_mean={float(np.mean(per_mask_std)):.6f} "
-              f"per_mask_std_max={float(np.max(per_mask_std)):.6f}")
-        # --- END ---
-        return float(np.mean(per_mask_std))
-
+            per_mask_std_logit.append(vals_lg.std())
+        sigma_prob = float(np.mean(per_mask_std))
+        sigma_logit = float(np.mean(per_mask_std_logit))
+        # If logit-std > 0 but prob-std ~ 0, the reference IS stochastic and
+        # sigma_obs=0 is saturation (Corollary 1 regime), not a dead noise path.
+        if sigma_logit > 1e-6 and sigma_prob < 1e-6:
+            regime = "saturated (prob flat, logit varies)"
+        elif sigma_logit < 1e-6:
+            regime = "NO noise reaching output (check rho)"
+        else:
+            regime = "active"
+        print(f"[sigma] prob_std={sigma_prob:.6f} logit_std={sigma_logit:.6f}"
+              f"  -> {regime}")
+        return sigma_prob
     # ---- explain under a single reference -----------------------------------
     def _explain_one(self, x, name, rho, target) -> PerReference:
         lib = self._lib
