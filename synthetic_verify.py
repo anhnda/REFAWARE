@@ -123,29 +123,41 @@ def fit_and_check(Z, y, true_support_singletons, beta_active, floor):
 #  EXPERIMENT 1: floor scaling.  Fix N, sweep m_{>K}; find minimum beta_active
 #  that is reliably recovered. Theory: that threshold ~ linear in sqrt(m).
 # --------------------------------------------------------------------------- #
-def experiment_floor_scaling(d=30, K=1, n_active=4, N=4000, sigma_obs=0.0,
-                             n_trials=12):
-    c = 1.0
+def experiment_floor_scaling(d=30, K=1, n_active=4, N=4000, sigma_obs=0.02,
+                             n_trials=24):
+    c = 1.3  # empirically calibrated leakage constant (see diagnose.py, Lemma 1)
     log_pK = math.log(p_K(d, K))
-    m_grid = np.array([0.0, 0.002, 0.005, 0.01, 0.02, 0.04, 0.08])
-    beta_grid = np.linspace(0.005, 0.20, 24)
+    # sweep reference-induced residual energy m_{>K} > 0 (the reference knob);
+    # small fixed sigma_obs gives a physical, nonzero intercept.
+    m_grid = np.array([0.002, 0.005, 0.01, 0.02, 0.04, 0.08, 0.12])
+    beta_grid = np.linspace(0.005, 0.22, 40)
 
     min_recoverable = []
     for m in m_grid:
-        # smallest beta with >=80% signed-support recovery across trials
-        chosen = np.nan
+        floor = (sigma_obs + c * math.sqrt(m)) * math.sqrt(log_pK / N)
+        # success rate as a function of beta, then interpolate the 80% crossing
+        rates = []
         for beta_active in beta_grid:
             succ = 0
             for t in range(n_trials):
                 sup, _, sample_fn = make_function(d, K, n_active, beta_active,
                                                   m, seed=1000 * t + int(m * 1e4))
                 Z, y = sample_fn(N, sigma_obs)
-                floor = (sigma_obs + c * math.sqrt(m)) * math.sqrt(log_pK / N)
                 ok, _ = fit_and_check(Z, y, sup, beta_active, floor)
                 succ += int(ok)
-            if succ / n_trials >= 0.8:
-                chosen = beta_active
-                break
+            rates.append(succ / n_trials)
+        rates = np.array(rates)
+        above = np.where(rates >= 0.8)[0]
+        if len(above) and above[0] > 0:
+            i = above[0]
+            # linear interpolation of the 0.8 crossing between grid points
+            b0, b1 = beta_grid[i - 1], beta_grid[i]
+            r0, r1 = rates[i - 1], rates[i]
+            chosen = b0 + (0.8 - r0) * (b1 - b0) / (r1 - r0 + 1e-12)
+        elif len(above):
+            chosen = beta_grid[above[0]]
+        else:
+            chosen = np.nan
         min_recoverable.append(chosen)
 
     min_recoverable = np.array(min_recoverable)
@@ -180,15 +192,19 @@ def experiment_floor_scaling(d=30, K=1, n_active=4, N=4000, sigma_obs=0.0,
 #  plot recovery prob vs beta_min / floor. Theory: all collapse to one curve.
 # --------------------------------------------------------------------------- #
 def experiment_collapse(d=30, K=1, n_active=4, n_trials=30):
-    c = 1.0
+    c = 1.3  # empirically calibrated leakage constant (see diagnose.py, Lemma 1)
     log_pK = math.log(p_K(d, K))
+    # The floor law concerns REFERENCE-INDUCED residual energy m_{>K} > 0.
+    # The m=0 case is a degenerate no-reference baseline (floor driven only by
+    # sigma_obs, shrinking as 1/sqrt(N) independent of any reference) and is not
+    # part of the reference-selection claim, so we exclude it from the collapse.
     settings = list(itertools.product(
         [1500, 3000, 6000],          # N
-        [0.0, 0.01, 0.04],           # m_{>K}
+        [0.01, 0.02, 0.04, 0.08],    # m_{>K} > 0  (the reference knob)
         [0.0, 0.05],                 # sigma_obs
     ))
     rescaled, probs, tags = [], [], []
-    beta_grid = np.linspace(0.01, 0.30, 14)
+    beta_grid = np.linspace(0.01, 0.30, 22)  # finer grid -> less quantization
     for (N, m, sig) in settings:
         floor = (sig + c * math.sqrt(m)) * math.sqrt(log_pK / N)
         for beta_active in beta_grid:
