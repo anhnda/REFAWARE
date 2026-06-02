@@ -39,7 +39,7 @@ def centered_design(Z: np.ndarray) -> np.ndarray:
 #  so to make the active set coincide with a detection `floor`, pass lam = floor.
 # --------------------------------------------------------------------------- #
 def lasso_fit(X: np.ndarray, y: np.ndarray, lam: float,
-              n_iter: int = 1000, tol: float = 1e-8):
+              n_iter: int = 50000, tol: float = 1e-6):
     if _HAVE_SK:
         m = _SkLasso(alpha=max(lam, 1e-9), fit_intercept=True,
                      max_iter=n_iter, tol=tol)

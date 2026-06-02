@@ -221,6 +221,12 @@ class RefLIME:
             zi = Zr[i:i + 1].repeat(self.sigma_repeat, 1)
             vals = self._query(x, rho, zi, target)
             per_mask_std.append(vals.std())
+        # --- TEMP DIAGNOSTIC ---
+        print(f"[sigma dbg] is_stochastic={getattr(rho,'is_stochastic',False)} "
+              f"n_masks={Zr.shape[0]} repeat={self.sigma_repeat} "
+              f"per_mask_std_mean={float(np.mean(per_mask_std)):.6f} "
+              f"per_mask_std_max={float(np.max(per_mask_std)):.6f}")
+        # --- END ---
         return float(np.mean(per_mask_std))
 
     # ---- explain under a single reference -----------------------------------

@@ -85,7 +85,7 @@ def insertion_deletion_auc(model, x, attr, rho, target, lib, device,
                     keep_cells[nxt] = 1.0
                 else:
                     keep_cells[nxt] = 0.0
-        return float(np.trapz(ys) / len(ys))
+        return float(np.trapezoid(ys) / len(ys))
     return {"insertion_auc": curve(True), "deletion_auc": curve(False)}
 
 
