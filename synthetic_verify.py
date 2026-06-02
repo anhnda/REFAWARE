@@ -29,7 +29,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from _core import centered_design, lasso_cd
+from lime import centered_design, lasso_cd
 
 rng = np.random.default_rng(0)
 
