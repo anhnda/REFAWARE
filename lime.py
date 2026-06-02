@@ -94,8 +94,9 @@ def noisy_inpaint_reference(sigma_blur: float = 11.0, noise: float = 0.15) -> Re
     texture noise. Stands in for sampled inpainting/LM-infill. sigma_obs > 0,
     so it exercises the bias-variance tradeoff of Remark 2."""
     def rho(x, keep):
-        b = _gaussian_blur(x, sigma_blur)
-        b = b + noise * torch.randn_like(b)
+        b = _gaussian_blur(x, sigma_blur)            # (1,C,H,W)
+        b = b.expand(keep.shape[0], -1, -1, -1)      # (B,C,H,W), no copy
+        b = b + noise * torch.randn_like(b)          # independent noise per row
         return keep * x + (1 - keep) * b
     rho.is_stochastic = True  # type: ignore[attr-defined]
     return rho
