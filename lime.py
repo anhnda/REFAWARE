@@ -35,6 +35,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from _core import centered_design, lasso_fit  # shared, sklearn-backed
+
 # --------------------------------------------------------------------------- #
 #  Reference operators (rho).  Each maps (x, keep_mask) -> completed image.
 #  keep_mask is (B,1,H,W) in {0,1}: 1 = keep original pixel, 0 = replace by rho.
@@ -142,46 +144,8 @@ class MaskLibrary:
         return keep.unsqueeze(1)            # (B,1,H,W)
 
 
-# --------------------------------------------------------------------------- #
-#  Centered orthonormal design.  chi_i(z) = 2 (z_i - 1/2)  in {-1, +1}.
-#  Columns are orthonormal in expectation under mu, so the fitted coefficients
-#  are the multilinear beta_{i,rho} and Parseval holds.
-# --------------------------------------------------------------------------- #
-def centered_design(Z: np.ndarray) -> np.ndarray:
-    return 2.0 * (Z - 0.5)  # (N, d) in {-1,+1}
 
 
-# --------------------------------------------------------------------------- #
-#  Lasso via coordinate descent (no sklearn dependency).  Standardized columns;
-#  intercept handled by centering y. This is the Theorem 1 estimator.
-# --------------------------------------------------------------------------- #
-def lasso_cd(X: np.ndarray, y: np.ndarray, lam: float,
-             n_iter: int = 500, tol: float = 1e-7) -> Tuple[np.ndarray, float]:
-    N, d = X.shape
-    y_mean = y.mean()
-    yc = y - y_mean
-    beta = np.zeros(d)
-    # precompute column norms (chi columns have norm^2 ~= N since entries +-1)
-    col_sq = (X ** 2).sum(axis=0) + 1e-12
-    r = yc.copy()  # residual = yc - X @ beta  (beta starts at 0)
-    for _ in range(n_iter):
-        max_delta = 0.0
-        for j in range(d):
-            xj = X[:, j]
-            # remove j's contribution, then soft-threshold
-            rho_j = xj @ (r + beta[j] * xj)
-            old = beta[j]
-            z = rho_j / col_sq[j]
-            thr = lam / (col_sq[j] / N)  # scale so lam matches 1/(2N)||.||^2 + lam||.||_1
-            new = np.sign(z) * max(abs(z) - thr / 2.0, 0.0)
-            if new != old:
-                r += (old - new) * xj
-                beta[j] = new
-                max_delta = max(max_delta, abs(new - old))
-        if max_delta < tol:
-            break
-    intercept = y_mean  # because columns are mean ~0, centered y absorbs it
-    return beta, intercept
 
 
 # --------------------------------------------------------------------------- #
@@ -281,14 +245,14 @@ class RefLIME:
         # fit with a pilot lambda, get residual, then set principled lambda.
         log_d = math.log(d + 1)
         pilot_lam = 0.5 * np.std(ytr) * math.sqrt(log_d / n_tr)
-        beta_p, b0_p = lasso_cd(Xtr, ytr, pilot_lam)
+        beta_p, b0_p = lasso_fit(Xtr, ytr, pilot_lam)
         resid_val = yval - (Xval @ beta_p + b0_p)
         m_hat = max(float(np.mean(resid_val ** 2) - sigma_obs ** 2), 0.0)
 
         # principled lambda  ~ (sigma_obs + c sqrt(m_hat)) sqrt(log d / N)
         lam = (sigma_obs + self.c * math.sqrt(m_hat)) * math.sqrt(log_d / n_tr)
         lam = max(lam, 1e-6)
-        beta, b0 = lasso_cd(Xtr, ytr, lam)
+        beta, b0 = lasso_fit(Xtr, ytr, lam)
 
         floor = (sigma_obs + self.c * math.sqrt(m_hat)) * math.sqrt(log_d / N)
         active = np.abs(beta) > floor
