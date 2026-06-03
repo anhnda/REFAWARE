@@ -59,7 +59,7 @@ def build_argparser():
     p.add_argument("--image", required=True, help="path to an RGB image")
     p.add_argument("--model", default="resnet50",
                    help="torchvision model name (resnet50, vit_b_16, ...)")
-    p.add_argument("--device", default="cuda", help="cpu | cuda")
+    p.add_argument("--device", default="cpu", help="cpu | cuda")
     p.add_argument("--grid", type=int, default=12, help="grid is (grid,grid)")
     p.add_argument("--n-samples", type=int, default=2000)
     p.add_argument("--val-frac", type=float, default=0.3)
@@ -166,6 +166,45 @@ def _agg(per_baseline, key, exclude=None):
 
 
 # --------------------------------------------------------------------------- #
+#  Within-image agreement between the selection signal and faithfulness.
+#
+#  These test the SS8.2 conjecture *on this one image* across the method
+#  references. With ~5 references this is descriptive only -- no p-value; the
+#  real inference is across many images (dataset loop, added later).
+#
+#  SS8.2 conjecture predicts: lower m_hat  -> better faithfulness, i.e.
+#      m_hat   vs insertion_auc : NEGATIVE rho   (less leakage -> higher ins)
+#      m_hat   vs deletion_auc  : POSITIVE rho   (less leakage -> lower  del)
+#  and the SNR gamma, being inverse to the floor, flips both signs.
+# --------------------------------------------------------------------------- #
+def _spearman(a, b):
+    """Spearman rank correlation, ties averaged. Pure numpy. nan if degenerate."""
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    if a.size < 2:
+        return float("nan")
+
+    def rank(v):
+        order = np.argsort(v, kind="mergesort")
+        r = np.empty_like(order, dtype=float)
+        r[order] = np.arange(len(v), dtype=float)
+        # average ties
+        _, inv, counts = np.unique(v, return_inverse=True, return_counts=True)
+        sums = np.zeros(len(counts))
+        np.add.at(sums, inv, r)
+        avg = sums / counts
+        return avg[inv]
+
+    ra, rb = rank(a), rank(b)
+    ra -= ra.mean()
+    rb -= rb.mean()
+    denom = np.sqrt((ra ** 2).sum() * (rb ** 2).sum())
+    if denom == 0:
+        return float("nan")
+    return float((ra * rb).sum() / denom)
+
+
+# --------------------------------------------------------------------------- #
 #  Main
 # --------------------------------------------------------------------------- #
 def main():
@@ -251,8 +290,63 @@ def main():
               f"del {agg_excl['deletion_auc']['mean']:.3f}"
               f" +/- {agg_excl['deletion_auc']['std']:.3f}")
 
-    # ---- 3) headline: the SS6-selected explanation ----
+    # ---- 2b) within-image agreement: selection signal vs faithfulness ----
+    # Build aligned vectors across method references, using the exclude-self
+    # (SS8.2-clean) aggregates as the faithfulness numbers.
+    ref_names = list(res.per_reference.keys())
+    m_hat_v = np.array([res.per_reference[n].m_hat for n in ref_names])
+    snr_v = np.array([res.per_reference[n].snr for n in ref_names])
+    ins_v = np.array([eval_block[n]["agg_exclude_self"]["insertion_auc"]["mean"]
+                      for n in ref_names])
+    del_v = np.array([eval_block[n]["agg_exclude_self"]["deletion_auc"]["mean"]
+                      for n in ref_names])
+
     best = res.best_reference
+    # rank of the selected ref: 1 = best (highest insertion / lowest deletion)
+    ins_rank = int(np.sum(ins_v > ins_v[ref_names.index(best)]) + 1)
+    del_rank = int(np.sum(del_v < del_v[ref_names.index(best)]) + 1)
+    n_ref = len(ref_names)
+    ins_winner = ref_names[int(np.argmax(ins_v))]
+    del_winner = ref_names[int(np.argmin(del_v))]
+
+    spearman = {
+        "m_hat_vs_insertion": _spearman(m_hat_v, ins_v),   # conjecture: < 0
+        "m_hat_vs_deletion": _spearman(m_hat_v, del_v),    # conjecture: > 0
+        "snr_vs_insertion": _spearman(snr_v, ins_v),       # conjecture: > 0
+        "snr_vs_deletion": _spearman(snr_v, del_v),        # conjecture: < 0
+    }
+    agreement = {
+        "selected_reference": best,
+        "n_references": n_ref,
+        "selected_insertion_rank": ins_rank,
+        "selected_deletion_rank": del_rank,
+        "insertion_winner": ins_winner,
+        "deletion_winner": del_winner,
+        "selected_won_insertion": bool(ins_winner == best),
+        "selected_won_deletion": bool(del_winner == best),
+        "spearman_exclude_self": spearman,
+    }
+
+    print("\n" + "-" * 60)
+    print("within-image agreement (selection signal vs faithfulness)")
+    print(f"  selected ref: {best}")
+    print(f"  insertion: rank {ins_rank}/{n_ref} "
+          f"(winner: {ins_winner}{' == selected' if ins_winner == best else ''})")
+    print(f"  deletion : rank {del_rank}/{n_ref} "
+          f"(winner: {del_winner}{' == selected' if del_winner == best else ''})")
+    print(f"  Spearman rho (across {n_ref} refs, exclude-self AUCs):")
+    print(f"    m_hat vs insertion: {spearman['m_hat_vs_insertion']:+.3f}"
+          f"   (SS8.2 expects < 0)")
+    print(f"    m_hat vs deletion : {spearman['m_hat_vs_deletion']:+.3f}"
+          f"   (SS8.2 expects > 0)")
+    print(f"    gamma vs insertion: {spearman['snr_vs_insertion']:+.3f}"
+          f"   (expects > 0)")
+    print(f"    gamma vs deletion : {spearman['snr_vs_deletion']:+.3f}"
+          f"   (expects < 0)")
+    print("  note: ~5 refs -> descriptive only; pool across images for inference")
+    print("-" * 60)
+
+    # ---- 3) headline: the SS6-selected explanation ----
     head_all = eval_block[best]["agg_all"]
     head_excl = eval_block[best]["agg_exclude_self"]
     print("\n" + "=" * 60)
@@ -282,6 +376,7 @@ def main():
             for name, pr in res.per_reference.items()
         },
         "eval": eval_block,
+        "agreement": agreement,
         "config": {
             "grid": args.grid, "n_samples": args.n_samples,
             "val_frac": args.val_frac, "c": args.c, "steps": args.steps,
