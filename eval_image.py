@@ -59,7 +59,7 @@ def build_argparser():
     p.add_argument("--image", required=True, help="path to an RGB image")
     p.add_argument("--model", default="resnet50",
                    help="torchvision model name (resnet50, vit_b_16, ...)")
-    p.add_argument("--device", default="cpu", help="cpu | cuda")
+    p.add_argument("--device", default="cuda", help="cpu | cuda")
     p.add_argument("--grid", type=int, default=12, help="grid is (grid,grid)")
     p.add_argument("--n-samples", type=int, default=2000)
     p.add_argument("--val-frac", type=float, default=0.3)
